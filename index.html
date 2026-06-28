@@ -44,6 +44,14 @@
     text-shadow: 0 0 12px rgba(255,255,255,0.4);
     letter-spacing: 1px;
   }
+  #combo-display {
+    color: #ffcc00;
+    font-size: 22px;
+    font-weight: bold;
+    text-shadow: 0 0 15px rgba(255,200,0,0.8);
+    transition: transform 0.1s;
+  }
+  #combo-display.pop { transform: scale(1.4); }
   #message {
     position: absolute;
     top: 50%; left: 50%;
@@ -87,6 +95,7 @@
   <canvas id="game"></canvas>
   <div id="ui">
     <span class="ui-item" id="score-display">分数: 0</span>
+    <span class="ui-item" id="combo-display"></span>
     <span class="ui-item" id="lives-display">生命: ❤❤❤</span>
     <span class="ui-item" id="level-display">第 1 关</span>
   </div>
@@ -236,12 +245,13 @@ function updateShake() {
 
 // ---- 游戏状态 ----
 let paddleX, ballX, ballY, ballDX, ballDY, ballSpeed;
-let bricks, score, lives, level, running, waitingToStart;
+let bricks, score, lives, level, combo, running, waitingToStart;
 let paddleGlow = 0;
 
 const scoreDisplay = document.getElementById('score-display');
 const livesDisplay = document.getElementById('lives-display');
 const levelDisplay = document.getElementById('level-display');
+const comboDisplay = document.getElementById('combo-display');
 const messageEl = document.getElementById('message');
 const restartBtn = document.getElementById('restart-btn');
 
@@ -271,6 +281,7 @@ function initGame() {
   score = 0;
   lives = 3;
   level = 1;
+  combo = 0;
   running = true;
   particles = [];
   trail = [];
@@ -288,6 +299,13 @@ function updateUI() {
   for (let i = 0; i < lives; i++) hearts += '❤';
   livesDisplay.textContent = '生命: ' + (hearts || '无');
   levelDisplay.textContent = '第 ' + level + ' 关';
+  if (combo >= 3) {
+    comboDisplay.textContent = '🔥 ' + combo + ' COMBO!';
+    comboDisplay.classList.add('pop');
+    setTimeout(() => comboDisplay.classList.remove('pop'), 150);
+  } else {
+    comboDisplay.textContent = '';
+  }
 }
 
 // ---- 绘制 ----
@@ -481,6 +499,7 @@ function update() {
   if (ballY - BALL_R > canvas.height) {
     spawnParticles(ballX, canvas.height - 10, '#e94560', 25);
     triggerShake(3);
+    combo = 0;
     lives--;
     updateUI();
     if (lives <= 0) {
@@ -500,8 +519,10 @@ function update() {
     ballDX = Math.sin(angle) * speed;
     ballDY = -Math.cos(angle) * speed;
     ballY = py - BALL_R;
+    combo = 0;
     spawnParticles(ballX, ballY, '#ffb74d', 8);
     triggerShake(0.8);
+    updateUI();
   }
 
   // 砖块碰撞
@@ -514,13 +535,15 @@ function update() {
 
       if (ballX + BALL_R > bx && ballX - BALL_R < bx + BRICK_W && ballY + BALL_R > by && ballY - BALL_R < by + BRICK_H) {
         bricks[r][c].alive = false;
-        score += 10 * (level + r);
+        combo++;
+        let comboBonus = combo >= 5 ? combo * 5 : 0;
+        score += 10 * (level + r) + comboBonus;
         brickHit = true;
 
         let cx = bx + BRICK_W / 2;
         let cy = by + BRICK_H / 2;
-        spawnParticles(cx, cy, bricks[r][c].color, 15);
-        triggerShake(1.2);
+        spawnParticles(cx, cy, bricks[r][c].color, 15 + combo * 2);
+        triggerShake(1.2 + combo * 0.1);
 
         let overlapL = ballX + BALL_R - bx;
         let overlapR = bx + BRICK_W - (ballX - BALL_R);
@@ -550,6 +573,7 @@ function update() {
   if (allClear) {
     level++;
     ballSpeed += 0.5;
+    combo = 0;
     updateUI();
     createBricks();
     resetBall();
