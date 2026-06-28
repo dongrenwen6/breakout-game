@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>打砖块</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: #0a0a1a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 100vh;
+    overflow: hidden;
+    font-family: 'Segoe UI', Arial, sans-serif;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #game-container {
+    position: relative;
+    border: 2px solid rgba(233,69,96,0.5);
+    border-radius: 12px;
+    box-shadow:
+      0 0 40px rgba(233,69,96,0.3),
+      0 0 80px rgba(233,69,96,0.1),
+      inset 0 0 0 1px rgba(255,255,255,0.03);
+    overflow: hidden;
+  }
+  canvas { display: block; }
+  #ui {
+    position: absolute;
+    top: 0; left: 0; right: 0;
+    display: flex;
+    justify-content: space-between;
+    padding: 14px 22px;
+    pointer-events: none;
+    background: linear-gradient(180deg, rgba(0,0,0,0.5) 0%, transparent 100%);
+  }
+  .ui-item {
+    color: #ddd;
+    font-size: 18px;
+    font-weight: bold;
+    text-shadow: 0 0 12px rgba(255,255,255,0.4);
+    letter-spacing: 1px;
+  }
+  #message {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    color: #fff;
+    font-size: 34px;
+    font-weight: bold;
+    text-align: center;
+    text-shadow: 0 0 20px rgba(233,69,96,0.9), 0 0 60px rgba(233,69,96,0.5);
+    pointer-events: none;
+    white-space: pre-line;
+    line-height: 1.5;
+  }
+  #restart-btn {
+    position: absolute;
+    bottom: 70px; left: 50%;
+    transform: translateX(-50%);
+    padding: 12px 36px;
+    font-size: 18px;
+    background: linear-gradient(135deg, #e94560, #c0392b);
+    color: #fff;
+    border: none;
+    border-radius: 30px;
+    cursor: pointer;
+    font-weight: bold;
+    display: none;
+    letter-spacing: 2px;
+    box-shadow: 0 4px 20px rgba(233,69,96,0.5);
+    transition: transform 0.15s, box-shadow 0.15s;
+  }
+  #restart-btn:hover {
+    transform: translateX(-50%) scale(1.05);
+    box-shadow: 0 6px 30px rgba(233,69,96,0.7);
+  }
+  #restart-btn:active { transform: translateX(-50%) scale(0.95); }
+</style>
+</head>
+<body>
+
+<div id="game-container">
+  <canvas id="game"></canvas>
+  <div id="ui">
+    <span class="ui-item" id="score-display">分数: 0</span>
+    <span class="ui-item" id="lives-display">生命: ❤❤❤</span>
+    <span class="ui-item" id="level-display">第 1 关</span>
+  </div>
+  <div id="message"></div>
+  <button id="restart-btn" onclick="restartGame()">再来一局</button>
+</div>
+
+<script>
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+
+const COLS = 10;
+const ROWS = 6;
+const BRICK_W = 70;
+const BRICK_H = 24;
+const BRICK_PAD = 4;
+const BRICK_TOP = 60;
+const BRICK_LEFT = 30;
+const PADDLE_W = 120;
+const PADDLE_H = 14;
+const PADDLE_Y_OFFSET = 40;
+const BALL_R = 8;
+
+canvas.width = BRICK_LEFT * 2 + COLS * (BRICK_W + BRICK_PAD) - BRICK_PAD;
+canvas.height = 560;
+
+const BRICK_COLORS = ['#ff4466', '#ff704d', '#ffb84d', '#5cd65c', '#4da6ff', '#b366ff'];
+
+// ---- 粒子系统 ----
+let particles = [];
+function spawnParticles(x, y, color, count) {
+  for (let i = 0; i < count; i++) {
+    let angle = Math.random() * Math.PI * 2;
+    let speed = 1.5 + Math.random() * 4;
+    particles.push({
+      x, y,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed - 1,
+      life: 1,
+      decay: 0.015 + Math.random() * 0.035,
+      size: 1.5 + Math.random() * 3,
+      color
+    });
+  }
+}
+
+function updateParticles() {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    let p = particles[i];
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vy += 0.05;
+    p.life -= p.decay;
+    if (p.life <= 0) particles.splice(i, 1);
+  }
+}
+
+function drawParticles() {
+  for (let p of particles) {
+    ctx.save();
+    ctx.globalAlpha = p.life;
+    ctx.fillStyle = p.color;
+    ctx.shadowColor = p.color;
+    ctx.shadowBlur = 6;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ---- 球尾迹 ----
+let trail = [];
+const TRAIL_LEN = 12;
+
+function updateTrail() {
+  trail.push({ x: ballX, y: ballY, life: 1 });
+  if (trail.length > TRAIL_LEN) trail.shift();
+  for (let t of trail) t.life -= 1 / TRAIL_LEN;
+}
+
+function drawTrail() {
+  for (let i = 0; i < trail.length; i++) {
+    let t = trail[i];
+    let r = BALL_R * (0.3 + 0.7 * t.life);
+    ctx.save();
+    ctx.globalAlpha = t.life * 0.5;
+    ctx.fillStyle = '#ffcc80';
+    ctx.shadowColor = '#ff9800';
+    ctx.shadowBlur = r * 2;
+    ctx.beginPath();
+    ctx.arc(t.x, t.y, r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ---- 星空背景 ----
+let stars = [];
+function initStars() {
+  stars = [];
+  for (let i = 0; i < 120; i++) {
+    stars.push({
+      x: Math.random() * canvas.width,
+      y: Math.random() * canvas.height,
+      r: 0.3 + Math.random() * 1.5,
+      twinkle: Math.random() * Math.PI * 2,
+      speed: 0.01 + Math.random() * 0.03
+    });
+  }
+}
+initStars();
+
+function drawStars() {
+  for (let s of stars) {
+    s.twinkle += s.speed;
+    let alpha = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(s.twinkle));
+    ctx.save();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle = '#fff';
+    ctx.shadowColor = '#fff';
+    ctx.shadowBlur = s.r * 3;
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+}
+
+// ---- 屏幕震动 ----
+let shakeX = 0, shakeY = 0;
+let shakeIntensity = 0;
+
+function triggerShake(intensity) {
+  shakeIntensity = Math.max(shakeIntensity, intensity);
+}
+
+function updateShake() {
+  if (shakeIntensity > 0.01) {
+    shakeX = (Math.random() - 0.5) * shakeIntensity * 2;
+    shakeY = (Math.random() - 0.5) * shakeIntensity * 2;
+    shakeIntensity *= 0.85;
+  } else {
+    shakeX = 0; shakeY = 0; shakeIntensity = 0;
+  }
+}
+
+// ---- 游戏状态 ----
+let paddleX, ballX, ballY, ballDX, ballDY, ballSpeed;
+let bricks, score, lives, level, running, waitingToStart;
+let paddleGlow = 0;
+
+const scoreDisplay = document.getElementById('score-display');
+const livesDisplay = document.getElementById('lives-display');
+const levelDisplay = document.getElementById('level-display');
+const messageEl = document.getElementById('message');
+const restartBtn = document.getElementById('restart-btn');
+
+function createBricks() {
+  bricks = [];
+  for (let r = 0; r < ROWS; r++) {
+    bricks[r] = [];
+    for (let c = 0; c < COLS; c++) {
+      bricks[r][c] = { alive: true, color: BRICK_COLORS[r] };
+    }
+  }
+}
+
+function resetBall() {
+  ballX = paddleX + PADDLE_W / 2;
+  ballY = canvas.height - PADDLE_Y_OFFSET - PADDLE_H - 12;
+  let angle = (Math.random() * 0.6 - 0.3) - Math.PI / 2;
+  ballDX = Math.cos(angle) * ballSpeed;
+  ballDY = Math.sin(angle) * ballSpeed;
+  trail = [];
+  waitingToStart = true;
+}
+
+function initGame() {
+  paddleX = canvas.width / 2 - PADDLE_W / 2;
+  ballSpeed = 3.5;
+  score = 0;
+  lives = 3;
+  level = 1;
+  running = true;
+  particles = [];
+  trail = [];
+  shakeIntensity = 0;
+  createBricks();
+  resetBall();
+  updateUI();
+  messageEl.textContent = '';
+  restartBtn.style.display = 'none';
+}
+
+function updateUI() {
+  scoreDisplay.textContent = '分数: ' + score;
+  let hearts = '';
+  for (let i = 0; i < lives; i++) hearts += '❤';
+  livesDisplay.textContent = '生命: ' + (hearts || '无');
+  levelDisplay.textContent = '第 ' + level + ' 关';
+}
+
+// ---- 绘制 ----
+
+function drawBackground() {
+  // 渐变天空
+  let sky = ctx.createLinearGradient(0, 0, 0, canvas.height);
+  sky.addColorStop(0, '#0d0d2b');
+  sky.addColorStop(0.5, '#141436');
+  sky.addColorStop(1, '#1a1a3e');
+  ctx.fillStyle = sky;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  // 底部发光
+  let glow = ctx.createRadialGradient(canvas.width / 2, canvas.height + 40, 20, canvas.width / 2, canvas.height, 300);
+  glow.addColorStop(0, 'rgba(233,69,96,0.1)');
+  glow.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = glow;
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+}
+
+function drawBrick(x, y, color, alive) {
+  if (!alive) return;
+
+  // 主体
+  let grad = ctx.createLinearGradient(x, y, x, y + BRICK_H);
+  grad.addColorStop(0, color);
+  grad.addColorStop(0.5, color);
+  grad.addColorStop(1, 'rgba(0,0,0,0.35)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(x, y, BRICK_W, BRICK_H, 3);
+  ctx.fill();
+
+  // 顶部高光
+  ctx.fillStyle = 'rgba(255,255,255,0.35)';
+  ctx.beginPath();
+  ctx.roundRect(x + 2, y + 1, BRICK_W - 4, BRICK_H * 0.45, [3, 3, 0, 0]);
+  ctx.fill();
+
+  // 中间光泽
+  let shine = ctx.createLinearGradient(x, y, x, y + BRICK_H);
+  shine.addColorStop(0, 'rgba(255,255,255,0.15)');
+  shine.addColorStop(0.5, 'rgba(255,255,255,0.0)');
+  shine.addColorStop(1, 'rgba(255,255,255,0.05)');
+  ctx.fillStyle = shine;
+  ctx.beginPath();
+  ctx.roundRect(x + 1, y + 1, BRICK_W - 2, BRICK_H - 2, 2);
+  ctx.fill();
+
+  // 边框发光
+  ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(x + 0.5, y + 0.5, BRICK_W - 1, BRICK_H - 1, 3);
+  ctx.stroke();
+}
+
+function drawPaddle() {
+  let py = canvas.height - PADDLE_Y_OFFSET;
+
+  // 光晕
+  paddleGlow += 0.05;
+  let glowAlpha = 0.3 + 0.15 * Math.sin(paddleGlow);
+  let glowGrad = ctx.createRadialGradient(
+    paddleX + PADDLE_W / 2, py + PADDLE_H / 2, PADDLE_W * 0.2,
+    paddleX + PADDLE_W / 2, py + PADDLE_H / 2, PADDLE_W * 1.0
+  );
+  glowGrad.addColorStop(0, 'rgba(233,69,96,' + glowAlpha + ')');
+  glowGrad.addColorStop(1, 'rgba(233,69,96,0)');
+  ctx.fillStyle = glowGrad;
+  ctx.fillRect(paddleX - 40, py - 40, PADDLE_W + 80, PADDLE_H + 80);
+
+  // 主体
+  let grad = ctx.createLinearGradient(paddleX, py, paddleX, py + PADDLE_H);
+  grad.addColorStop(0, '#ff5e7e');
+  grad.addColorStop(0.4, '#e94560');
+  grad.addColorStop(0.6, '#d63851');
+  grad.addColorStop(1, '#a8203a');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.roundRect(paddleX, py, PADDLE_W, PADDLE_H, 8);
+  ctx.fill();
+
+  // 高光
+  ctx.fillStyle = 'rgba(255,255,255,0.4)';
+  ctx.fillRect(paddleX + 8, py + 2, PADDLE_W - 16, 5);
+
+  // 边线
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(paddleX + 0.5, py + 0.5, PADDLE_W - 1, PADDLE_H - 1, 8);
+  ctx.stroke();
+}
+
+function drawBall() {
+  // 外层光晕
+  let outerGlow = ctx.createRadialGradient(ballX, ballY, BALL_R * 0.5, ballX, ballY, BALL_R * 3.5);
+  outerGlow.addColorStop(0, 'rgba(255,200,130,0.8)');
+  outerGlow.addColorStop(0.4, 'rgba(255,150,60,0.3)');
+  outerGlow.addColorStop(1, 'rgba(255,80,20,0)');
+  ctx.fillStyle = outerGlow;
+  ctx.beginPath();
+  ctx.arc(ballX, ballY, BALL_R * 3.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 主体
+  let ballGrad = ctx.createRadialGradient(ballX - 2, ballY - 3, BALL_R * 0.1, ballX, ballY, BALL_R);
+  ballGrad.addColorStop(0, '#fff');
+  ballGrad.addColorStop(0.3, '#ffecb3');
+  ballGrad.addColorStop(0.6, '#ffb74d');
+  ballGrad.addColorStop(1, '#e65100');
+  ctx.fillStyle = ballGrad;
+  ctx.beginPath();
+  ctx.arc(ballX, ballY, BALL_R, 0, Math.PI * 2);
+  ctx.fill();
+
+  // 高光点
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.beginPath();
+  ctx.arc(ballX - 2, ballY - 3, BALL_R * 0.3, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  ctx.save();
+  ctx.translate(shakeX, shakeY);
+
+  drawBackground();
+  drawStars();
+
+  // 砖块
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (bricks[r][c].alive) {
+        let bx = BRICK_LEFT + c * (BRICK_W + BRICK_PAD);
+        let by = BRICK_TOP + r * (BRICK_H + BRICK_PAD);
+        drawBrick(bx, by, bricks[r][c].color, true);
+      }
+    }
+  }
+
+  drawTrail();
+  drawParticles();
+  drawPaddle();
+  drawBall();
+
+  ctx.restore();
+}
+
+// ---- 游戏逻辑 ----
+
+function update() {
+  updateShake();
+  updateParticles();
+  if (!running) return;
+
+  if (waitingToStart) {
+    ballX = paddleX + PADDLE_W / 2;
+    ballY = canvas.height - PADDLE_Y_OFFSET - PADDLE_H - 12;
+    return;
+  }
+
+  updateTrail();
+  ballX += ballDX;
+  ballY += ballDY;
+
+  // 墙壁碰撞
+  if (ballX - BALL_R <= 0) {
+    ballX = BALL_R;
+    ballDX = Math.abs(ballDX);
+    spawnParticles(ballX, ballY, '#4da6ff', 5);
+    triggerShake(0.5);
+  }
+  if (ballX + BALL_R >= canvas.width) {
+    ballX = canvas.width - BALL_R;
+    ballDX = -Math.abs(ballDX);
+    spawnParticles(ballX, ballY, '#4da6ff', 5);
+    triggerShake(0.5);
+  }
+  if (ballY - BALL_R <= 0) {
+    ballY = BALL_R;
+    ballDY = Math.abs(ballDY);
+    spawnParticles(ballX, ballY, '#4da6ff', 5);
+  }
+
+  // 出界
+  if (ballY - BALL_R > canvas.height) {
+    spawnParticles(ballX, canvas.height - 10, '#e94560', 25);
+    triggerShake(3);
+    lives--;
+    updateUI();
+    if (lives <= 0) {
+      gameOver(false);
+    } else {
+      resetBall();
+    }
+    return;
+  }
+
+  // 挡板碰撞
+  let py = canvas.height - PADDLE_Y_OFFSET;
+  if (ballDY > 0 && ballY + BALL_R >= py && ballY - BALL_R <= py + PADDLE_H && ballX >= paddleX - BALL_R && ballX <= paddleX + PADDLE_W + BALL_R) {
+    let hitPos = (ballX - paddleX) / PADDLE_W;
+    let angle = (hitPos - 0.5) * Math.PI * 0.65;
+    let speed = Math.sqrt(ballDX * ballDX + ballDY * ballDY);
+    ballDX = Math.sin(angle) * speed;
+    ballDY = -Math.cos(angle) * speed;
+    ballY = py - BALL_R;
+    spawnParticles(ballX, ballY, '#ffb74d', 8);
+    triggerShake(0.8);
+  }
+
+  // 砖块碰撞
+  let brickHit = false;
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      if (!bricks[r][c].alive) continue;
+      let bx = BRICK_LEFT + c * (BRICK_W + BRICK_PAD);
+      let by = BRICK_TOP + r * (BRICK_H + BRICK_PAD);
+
+      if (ballX + BALL_R > bx && ballX - BALL_R < bx + BRICK_W && ballY + BALL_R > by && ballY - BALL_R < by + BRICK_H) {
+        bricks[r][c].alive = false;
+        score += 10 * (level + r);
+        brickHit = true;
+
+        let cx = bx + BRICK_W / 2;
+        let cy = by + BRICK_H / 2;
+        spawnParticles(cx, cy, bricks[r][c].color, 15);
+        triggerShake(1.2);
+
+        let overlapL = ballX + BALL_R - bx;
+        let overlapR = bx + BRICK_W - (ballX - BALL_R);
+        let overlapT = ballY + BALL_R - by;
+        let overlapB = by + BRICK_H - (ballY - BALL_R);
+        let minX = Math.min(overlapL, overlapR);
+        let minY = Math.min(overlapT, overlapB);
+
+        if (minX < minY) {
+          ballDX = overlapL < overlapR ? -Math.abs(ballDX) : Math.abs(ballDX);
+        } else {
+          ballDY = overlapT < overlapB ? -Math.abs(ballDY) : Math.abs(ballDY);
+        }
+        updateUI();
+        break;
+      }
+    }
+    if (brickHit) break;
+  }
+
+  // 检查通关
+  let allClear = true;
+  for (let r = 0; r < ROWS; r++)
+    for (let c = 0; c < COLS; c++)
+      if (bricks[r][c].alive) allClear = false;
+
+  if (allClear) {
+    level++;
+    ballSpeed += 0.5;
+    updateUI();
+    createBricks();
+    resetBall();
+    messageEl.textContent = '🎉 第 ' + level + ' 关!';
+    setTimeout(() => { messageEl.textContent = ''; }, 1500);
+  }
+}
+
+function gameOver(won) {
+  running = false;
+  if (won) {
+    messageEl.textContent = '🏆 你赢了！\n总分: ' + score;
+  } else {
+    messageEl.textContent = '💀 游戏结束\n分数: ' + score;
+  }
+  restartBtn.style.display = 'block';
+}
+
+function restartGame() {
+  initGame();
+}
+
+function gameLoop() {
+  update();
+  draw();
+  requestAnimationFrame(gameLoop);
+}
+
+canvas.addEventListener('mousemove', e => {
+  let rect = canvas.getBoundingClientRect();
+  paddleX = e.clientX - rect.left - PADDLE_W / 2;
+  paddleX = Math.max(0, Math.min(canvas.width - PADDLE_W, paddleX));
+});
+
+canvas.addEventListener('click', () => {
+  if (waitingToStart && running) {
+    waitingToStart = false;
+  }
+});
+
+canvas.addEventListener('touchmove', e => {
+  e.preventDefault();
+  let rect = canvas.getBoundingClientRect();
+  paddleX = e.touches[0].clientX - rect.left - PADDLE_W / 2;
+  paddleX = Math.max(0, Math.min(canvas.width - PADDLE_W, paddleX));
+});
+
+canvas.addEventListener('touchstart', e => {
+  e.preventDefault();
+  if (waitingToStart && running) {
+    waitingToStart = false;
+  }
+  let rect = canvas.getBoundingClientRect();
+  paddleX = e.touches[0].clientX - rect.left - PADDLE_W / 2;
+  paddleX = Math.max(0, Math.min(canvas.width - PADDLE_W, paddleX));
+});
+
+initGame();
+gameLoop();
+</script>
+</body>
+</html>
