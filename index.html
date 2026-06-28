@@ -52,6 +52,13 @@
     transition: transform 0.1s;
   }
   #combo-display.pop { transform: scale(1.4); }
+  #power-timer {
+    color: #4df0ff;
+    font-size: 16px;
+    font-weight: bold;
+    text-shadow: 0 0 12px rgba(77,240,255,0.7);
+    transition: opacity 0.3s;
+  }
   #message {
     position: absolute;
     top: 50%; left: 50%;
@@ -96,6 +103,7 @@
   <div id="ui">
     <span class="ui-item" id="score-display">分数: 0</span>
     <span class="ui-item" id="combo-display"></span>
+    <span class="ui-item" id="power-timer"></span>
     <span class="ui-item" id="lives-display">生命: ❤❤❤</span>
     <span class="ui-item" id="level-display">第 1 关</span>
   </div>
@@ -243,6 +251,90 @@ function updateShake() {
   }
 }
 
+// ---- 道具系统 ----
+let powerUps = [];
+let powerUpActive = false;
+let powerUpTimer = 0;
+const POWERUP_SPEED = 2.5;
+const POWERUP_RADIUS = 12;
+const POWERUP_DURATION = 480; // ~8 seconds
+const PADDLE_WIDE = 180;
+let currentPaddleW = PADDLE_W;
+
+function spawnPowerUp(x, y) {
+  powerUps.push({ x, y });
+}
+
+function updatePowerUps() {
+  // Move power-ups down
+  for (let i = powerUps.length - 1; i >= 0; i--) {
+    powerUps[i].y += POWERUP_SPEED;
+    // Remove if off screen
+    if (powerUps[i].y > canvas.height + 30) {
+      powerUps.splice(i, 1);
+    }
+  }
+
+  // Power-up timer countdown
+  if (powerUpActive) {
+    powerUpTimer--;
+    if (powerUpTimer <= 0) {
+      powerUpActive = false;
+      currentPaddleW = PADDLE_W;
+    }
+  }
+}
+
+function drawPowerUps() {
+  for (let p of powerUps) {
+    let t = Date.now() / 1000;
+    // Pulsing glow
+    let glowSize = POWERUP_RADIUS * (2.5 + 0.5 * Math.sin(t * 4));
+    let glow = ctx.createRadialGradient(p.x, p.y, POWERUP_RADIUS * 0.3, p.x, p.y, glowSize);
+    glow.addColorStop(0, 'rgba(77,240,255,0.9)');
+    glow.addColorStop(0.5, 'rgba(77,200,255,0.4)');
+    glow.addColorStop(1, 'rgba(77,150,255,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, glowSize, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Core
+    let grad = ctx.createRadialGradient(p.x - 2, p.y - 2, 2, p.x, p.y, POWERUP_RADIUS);
+    grad.addColorStop(0, '#fff');
+    grad.addColorStop(0.5, '#4df0ff');
+    grad.addColorStop(1, '#0088cc');
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, POWERUP_RADIUS, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Icon: double arrow up
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 14px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('⬆', p.x, p.y);
+  }
+}
+
+// catch power-up with paddle
+function checkPowerUpCatch() {
+  let py = canvas.height - PADDLE_Y_OFFSET;
+  for (let i = powerUps.length - 1; i >= 0; i--) {
+    let p = powerUps[i];
+    if (p.y + POWERUP_RADIUS >= py && p.y - POWERUP_RADIUS <= py + PADDLE_H &&
+        p.x >= paddleX - POWERUP_RADIUS && p.x <= paddleX + currentPaddleW + POWERUP_RADIUS) {
+      // Caught!
+      powerUps.splice(i, 1);
+      powerUpActive = true;
+      powerUpTimer = POWERUP_DURATION;
+      currentPaddleW = PADDLE_WIDE;
+      spawnParticles(p.x, p.y, '#4df0ff', 20);
+    }
+  }
+}
+
 // ---- 游戏状态 ----
 let paddleX, ballX, ballY, ballDX, ballDY, ballSpeed;
 let bricks, score, lives, level, combo, running, waitingToStart;
@@ -252,6 +344,7 @@ const scoreDisplay = document.getElementById('score-display');
 const livesDisplay = document.getElementById('lives-display');
 const levelDisplay = document.getElementById('level-display');
 const comboDisplay = document.getElementById('combo-display');
+const powerTimerDisplay = document.getElementById('power-timer');
 const messageEl = document.getElementById('message');
 const restartBtn = document.getElementById('restart-btn');
 
@@ -266,7 +359,7 @@ function createBricks() {
 }
 
 function resetBall() {
-  ballX = paddleX + PADDLE_W / 2;
+  ballX = paddleX + currentPaddleW / 2;
   ballY = canvas.height - PADDLE_Y_OFFSET - PADDLE_H - 12;
   let angle = (Math.random() * 0.6 - 0.3) - Math.PI / 2;
   ballDX = Math.cos(angle) * ballSpeed;
@@ -286,6 +379,10 @@ function initGame() {
   particles = [];
   trail = [];
   shakeIntensity = 0;
+  powerUps = [];
+  powerUpActive = false;
+  powerUpTimer = 0;
+  currentPaddleW = PADDLE_W;
   createBricks();
   resetBall();
   updateUI();
@@ -305,6 +402,12 @@ function updateUI() {
     setTimeout(() => comboDisplay.classList.remove('pop'), 150);
   } else {
     comboDisplay.textContent = '';
+  }
+  if (powerUpActive) {
+    let seconds = Math.ceil(powerUpTimer / 60);
+    powerTimerDisplay.textContent = '⚡加宽 ' + seconds + 's';
+  } else {
+    powerTimerDisplay.textContent = '';
   }
 }
 
@@ -366,39 +469,48 @@ function drawBrick(x, y, color, alive) {
 
 function drawPaddle() {
   let py = canvas.height - PADDLE_Y_OFFSET;
+  let pw = currentPaddleW;
 
-  // 光晕
+  // 光晕 (scaled with paddle width)
   paddleGlow += 0.05;
-  let glowAlpha = 0.3 + 0.15 * Math.sin(paddleGlow);
+  let glowAlpha = powerUpActive ? 0.5 + 0.2 * Math.sin(paddleGlow * 2) : 0.3 + 0.15 * Math.sin(paddleGlow);
+  let glowColor = powerUpActive ? 'rgba(77,240,255,' : 'rgba(233,69,96,';
   let glowGrad = ctx.createRadialGradient(
-    paddleX + PADDLE_W / 2, py + PADDLE_H / 2, PADDLE_W * 0.2,
-    paddleX + PADDLE_W / 2, py + PADDLE_H / 2, PADDLE_W * 1.0
+    paddleX + pw / 2, py + PADDLE_H / 2, pw * 0.2,
+    paddleX + pw / 2, py + PADDLE_H / 2, pw * 1.0
   );
-  glowGrad.addColorStop(0, 'rgba(233,69,96,' + glowAlpha + ')');
-  glowGrad.addColorStop(1, 'rgba(233,69,96,0)');
+  glowGrad.addColorStop(0, glowColor + glowAlpha + ')');
+  glowGrad.addColorStop(1, 'rgba(77,240,255,0)');
   ctx.fillStyle = glowGrad;
-  ctx.fillRect(paddleX - 40, py - 40, PADDLE_W + 80, PADDLE_H + 80);
+  ctx.fillRect(paddleX - 40, py - 40, pw + 80, PADDLE_H + 80);
 
   // 主体
   let grad = ctx.createLinearGradient(paddleX, py, paddleX, py + PADDLE_H);
-  grad.addColorStop(0, '#ff5e7e');
-  grad.addColorStop(0.4, '#e94560');
-  grad.addColorStop(0.6, '#d63851');
-  grad.addColorStop(1, '#a8203a');
+  if (powerUpActive) {
+    grad.addColorStop(0, '#4df0ff');
+    grad.addColorStop(0.4, '#00b8d4');
+    grad.addColorStop(0.6, '#0091a8');
+    grad.addColorStop(1, '#005f73');
+  } else {
+    grad.addColorStop(0, '#ff5e7e');
+    grad.addColorStop(0.4, '#e94560');
+    grad.addColorStop(0.6, '#d63851');
+    grad.addColorStop(1, '#a8203a');
+  }
   ctx.fillStyle = grad;
   ctx.beginPath();
-  ctx.roundRect(paddleX, py, PADDLE_W, PADDLE_H, 8);
+  ctx.roundRect(paddleX, py, pw, PADDLE_H, 8);
   ctx.fill();
 
   // 高光
   ctx.fillStyle = 'rgba(255,255,255,0.4)';
-  ctx.fillRect(paddleX + 8, py + 2, PADDLE_W - 16, 5);
+  ctx.fillRect(paddleX + 8, py + 2, pw - 16, 5);
 
   // 边线
-  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.strokeStyle = powerUpActive ? 'rgba(77,240,255,0.4)' : 'rgba(255,255,255,0.2)';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.roundRect(paddleX + 0.5, py + 0.5, PADDLE_W - 1, PADDLE_H - 1, 8);
+  ctx.roundRect(paddleX + 0.5, py + 0.5, pw - 1, PADDLE_H - 1, 8);
   ctx.stroke();
 }
 
@@ -451,6 +563,7 @@ function draw() {
     }
   }
 
+  drawPowerUps();
   drawTrail();
   drawParticles();
   drawPaddle();
@@ -464,10 +577,12 @@ function draw() {
 function update() {
   updateShake();
   updateParticles();
+  updatePowerUps();
+  checkPowerUpCatch();
   if (!running) return;
 
   if (waitingToStart) {
-    ballX = paddleX + PADDLE_W / 2;
+    ballX = paddleX + currentPaddleW / 2;
     ballY = canvas.height - PADDLE_Y_OFFSET - PADDLE_H - 12;
     return;
   }
@@ -512,8 +627,8 @@ function update() {
 
   // 挡板碰撞
   let py = canvas.height - PADDLE_Y_OFFSET;
-  if (ballDY > 0 && ballY + BALL_R >= py && ballY - BALL_R <= py + PADDLE_H && ballX >= paddleX - BALL_R && ballX <= paddleX + PADDLE_W + BALL_R) {
-    let hitPos = (ballX - paddleX) / PADDLE_W;
+  if (ballDY > 0 && ballY + BALL_R >= py && ballY - BALL_R <= py + PADDLE_H && ballX >= paddleX - BALL_R && ballX <= paddleX + currentPaddleW + BALL_R) {
+    let hitPos = (ballX - paddleX) / currentPaddleW;
     let angle = (hitPos - 0.5) * Math.PI * 0.65;
     let speed = Math.sqrt(ballDX * ballDX + ballDY * ballDY);
     ballDX = Math.sin(angle) * speed;
@@ -544,6 +659,11 @@ function update() {
         let cy = by + BRICK_H / 2;
         spawnParticles(cx, cy, bricks[r][c].color, 15 + combo * 2);
         triggerShake(1.2 + combo * 0.1);
+
+        // 30% chance to spawn power-up
+        if (Math.random() < 0.3) {
+          spawnPowerUp(cx, cy);
+        }
 
         let overlapL = ballX + BALL_R - bx;
         let overlapR = bx + BRICK_W - (ballX - BALL_R);
@@ -604,8 +724,8 @@ function gameLoop() {
 
 canvas.addEventListener('mousemove', e => {
   let rect = canvas.getBoundingClientRect();
-  paddleX = e.clientX - rect.left - PADDLE_W / 2;
-  paddleX = Math.max(0, Math.min(canvas.width - PADDLE_W, paddleX));
+  paddleX = e.clientX - rect.left - currentPaddleW / 2;
+  paddleX = Math.max(0, Math.min(canvas.width - currentPaddleW, paddleX));
 });
 
 canvas.addEventListener('click', () => {
@@ -617,8 +737,8 @@ canvas.addEventListener('click', () => {
 canvas.addEventListener('touchmove', e => {
   e.preventDefault();
   let rect = canvas.getBoundingClientRect();
-  paddleX = e.touches[0].clientX - rect.left - PADDLE_W / 2;
-  paddleX = Math.max(0, Math.min(canvas.width - PADDLE_W, paddleX));
+  paddleX = e.touches[0].clientX - rect.left - currentPaddleW / 2;
+  paddleX = Math.max(0, Math.min(canvas.width - currentPaddleW, paddleX));
 });
 
 canvas.addEventListener('touchstart', e => {
@@ -627,8 +747,8 @@ canvas.addEventListener('touchstart', e => {
     waitingToStart = false;
   }
   let rect = canvas.getBoundingClientRect();
-  paddleX = e.touches[0].clientX - rect.left - PADDLE_W / 2;
-  paddleX = Math.max(0, Math.min(canvas.width - PADDLE_W, paddleX));
+  paddleX = e.touches[0].clientX - rect.left - currentPaddleW / 2;
+  paddleX = Math.max(0, Math.min(canvas.width - currentPaddleW, paddleX));
 });
 
 initGame();
